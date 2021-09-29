@@ -921,6 +921,37 @@ void Conductivity::compute_kappa_coherent(double ***kappa_coherent,
         memory->allocate(kappa_save, ns2, kpoint->nk_irred);
     }
 
+    const int debug = -1;
+
+
+    double ***kappa_each_k = nullptr;
+
+    if (debug == 0) {
+        memory->allocate(kappa_each_k, kpoint->nk_irred, ntemp, 3);
+        for (auto ik = 0; ik < kpoint->nk_irred; ++ik) {
+            for (auto i = 0; i < ntemp; ++i) {
+                for (auto j = 0; j < 3; ++j) {
+                    kappa_each_k[ik][i][j] = 0.0;
+                }
+            }
+        }
+    
+    }
+
+    if (debug >= 1 ) {
+        // print out velocity matrix at k = debug - 1
+        auto ik = debug - 1;
+        auto ktmp = kpoint->kpoint_irred_all[ik][0].knum;
+
+        std::cout << ktmp << std::endl;
+        for (auto is = 0; is < ns ; ++is) {
+            for (auto js = 0; js < ns; ++js) {
+                std::cout << std::setw(10) << is << std::setw(10) << js << std::setw(20) << std::scientific
+                                << std::setprecision(10) << velmat[ktmp][is][js][0].real() << std::endl;
+            }
+        }
+    }
+
     for (auto i = 0; i < ntemp; ++i) {
         for (unsigned int j = 0; j < 3; ++j) {
             for (unsigned int k = 0; k < 3; ++k) {
@@ -962,6 +993,10 @@ void Conductivity::compute_kappa_coherent(double ***kappa_coherent,
 
                             if (calc_coherent == 2 && j == k) {
                                 kappa_save[ib][ik] = kcelem_tmp * common_factor_output;
+                            }
+
+                            if (debug == 0 && j == k ) {
+                                kappa_each_k[ik][i][j] += kcelem_tmp.real() * common_factor_output;
                             }
                         }
                     } // end OpenMP parallelization over ib
@@ -1006,10 +1041,28 @@ void Conductivity::compute_kappa_coherent(double ***kappa_coherent,
         }
     }
 
+    if (debug == 0) {
+        for (auto ik = 0; ik < kpoint->nk_irred; ++ik) {
+            std::cout << ik << std::endl;
+            for (auto i = 0; i < ntemp; ++i) {
+                std::cout << std::setw(10) << std::setprecision(2) << Temperature[i];
+        
+                for (auto j = 0; j < 3; ++j) {
+                    std::cout << std::setw(20) << std::scientific
+                                << std::setprecision(10) << kappa_each_k[ik][i][j];
+                }
+
+                std::cout << std::endl;
+            }
+        }
+    }
+
     if (calc_coherent == 2) {
         ofs.close();
         memory->deallocate(kappa_save);
     }
+
+    if (debug == 0) memory->deallocate(kappa_each_k);
 }
 
 
