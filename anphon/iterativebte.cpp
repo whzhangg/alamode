@@ -1057,9 +1057,10 @@ void Iterativebte::iterative_solver()
                     }
                 }
                 if (mympi->my_rank == 0) {
-                    std::cout << "   -> Converged is achieved                 "
-                              << "                                            " 
-                              << "                                    "
+                    std::cout << "   -> Converged is achieved";
+                    if (converged1) std::cout << " (dF converged)                                             ";
+                               else std::cout << " (kappa converged)                                          ";
+                    std::cout << "                                     "
                               << std::setw(14) << std::scientific << std::setprecision(2) << norm << std::endl;
                 }
                 break;
