@@ -193,55 +193,6 @@ void Iterativebte::do_iterativebte()
         std::cout << "     DONE !" << std::endl;
     }
     
-    if (isotope->include_isotope) {
-
-        double **isotope_damping;
-        allocate(isotope_damping, dos->kmesh_dos->nk_irred, ns);
-
-        if (mympi->my_rank == 0) {
-            for (auto ik = 0; ik < dos->kmesh_dos->nk_irred; ik++) {
-                for (auto is = 0; is < ns; is++) {
-                    isotope_damping[ik][is] = isotope->gamma_isotope[ik][is];
-                }
-            }
-        }
-
-        MPI_Bcast(&isotope_damping[0][0], dos->kmesh_dos->nk_irred * ns, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-
-        allocate(isotope_damping_loc, nklocal, ns);
-        for (auto ik = 0; ik < nklocal; ik++) {
-            auto tmpk = nk_l[ik];
-            for (auto is = 0; is < ns; is++) {
-                isotope_damping_loc[ik][is] = isotope_damping[tmpk][is];
-            }
-        }
-
-        deallocate(isotope_damping);
-    }
-
-    if (conductivity->len_boundary > eps) {
-        allocate(boundary_damping_loc, nklocal, ns);
-
-        double vel_norm;
-        for (auto ik = 0; ik < nklocal; ++ik) {
-            auto tmpk = nk_l[ik];
-            const int k1 = dos->kmesh_dos->kpoint_irred_all[tmpk][0].knum;
-            vel_norm = 0.0;
-            for (auto is = 0; is < ns; is++) { 
-                for (auto j = 0; j < 3; ++j) {
-                    vel_norm += vel[k1][is][j] * vel[k1][is][j];
-                }
-                
-                vel_norm = std::sqrt(vel_norm);
-                boundary_damping_loc[ik][is] += (vel_norm / conductivity->len_boundary) * time_ry ;
-            }
-        }
-    }
-
-    if (conductivity->fph_rta > 0) {
-        calc_damping4();
-    }
-
     iterative_solver();
     write_kappa_iterative();
 }
@@ -663,86 +614,6 @@ void Iterativebte::calc_damping4()
 
         deallocate(damping4_dense);
     }
-            
-    /*
-    if (mympi->my_rank == 0) {
-
-        double ***damping4_coarse = nullptr;
-        double ***damping4_interpolated = nullptr;
-        allocate(damping4_interpolated, ns, ntemp, dos->kmesh_dos->nk);
-        allocate(damping4_coarse, ns, ntemp, conductivity->kmesh_4ph->nk);
-
-        auto interpol = new TriLinearInterpolator(conductivity->kmesh_4ph->nk_i,
-                                                  dos->kmesh_dos->nk_i);
-        interpol->setup();
-
-        if (conductivity->interpolator == "linear") {
-
-            for (auto ik = 0; ik < conductivity->kmesh_4ph->nk; ++ik) {
-                for (auto is = 0; is < ns; ++is) {
-                    for (auto itemp = 0; itemp < ntemp; ++itemp) {
-                        damping4_coarse[is][itemp][ik]
-                            = conductivity->damping4[conductivity->kmesh_4ph->kmap_to_irreducible[ik] * ns + is][itemp];
-                    }
-                }
-            }
-
-            for (auto is = 0; is < ns; ++is) {
-                for (auto itemp = 0; itemp < ntemp; ++itemp) {
-                    interpol->interpolate(damping4_coarse[is][itemp],
-                                          damping4_interpolated[is][itemp]);
-                }
-            }
-
-            for (auto ik = 0; ik < dos->kmesh_dos->nk_irred; ++ik) {
-                auto knum = dos->kmesh_dos->kpoint_irred_all[ik][0].knum;
-                for (auto itemp = 0; itemp < ntemp; ++itemp) {
-                    for (auto is = 0; is < ns; ++is) {
-                        damping4_ir[itemp][ik][is] = damping4_interpolated[is][itemp][knum];
-                    }
-                }
-            }
-
-        } else if (conductivity->interpolator == "log-linear" || conductivity->interpolator == "modified-log-linear") {
-
-            double val_tmp;
-            for (auto ik = 0; ik < conductivity->kmesh_4ph->nk; ++ik) {
-                for (auto is = 0; is < ns; ++is) {
-                    for (auto itemp = 0; itemp < ntemp; ++itemp) {
-                        val_tmp = conductivity->damping4[conductivity->kmesh_4ph->kmap_to_irreducible[ik] * ns + is][itemp];
-                        if (val_tmp < eps) val_tmp = eps; // TODO: reconsider appropriate cutoff value here.
-                        damping4_coarse[is][itemp][ik] = std::log(val_tmp);
-                    }
-                }
-            }
-
-            for (auto is = 0; is < ns; ++is) {
-                for (auto itemp = 0; itemp < ntemp; ++itemp) {
-                    if (conductivity->interpolator == "modified-log-linear"){
-                        interpol->interpolate_avoidgamma(damping4_coarse[is][itemp],
-                                            damping4_interpolated[is][itemp], is);
-                    } else {
-                        interpol->interpolate(damping4_coarse[is][itemp],
-                                            damping4_interpolated[is][itemp]);
-                    }
-                }
-            }
-
-            for (auto ik = 0; ik < dos->kmesh_dos->nk_irred; ++ik) {
-                auto knum = dos->kmesh_dos->kpoint_irred_all[ik][0].knum;
-                for (auto itemp = 0; itemp < ntemp; ++itemp) {
-                    for (auto is = 0; is < ns; ++is) {
-                        damping4_ir[itemp][ik][is] = std::exp(damping4_interpolated[is][itemp][knum]);
-                    }
-                }
-            }
-        }
-
-        deallocate(damping4_coarse);
-        deallocate(damping4_interpolated);
-        delete interpol;
-    }
-    */
 
     MPI_Bcast(&damping4_ir[0][0][0], ntemp * dos->kmesh_dos->nk_irred * ns, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
@@ -779,6 +650,59 @@ void Iterativebte::iterative_solver()
     allocate(Q, nklocal, ns);
     allocate(dndt, nklocal, ns);
     allocate(fb, nk_3ph, ns);
+
+    double **isotope_damping_loc;
+    if (isotope->include_isotope) {
+
+        double **isotope_damping;
+        allocate(isotope_damping, dos->kmesh_dos->nk_irred, ns);
+
+        if (mympi->my_rank == 0) {
+            for (auto ik = 0; ik < dos->kmesh_dos->nk_irred; ik++) {
+                for (auto is = 0; is < ns; is++) {
+                    isotope_damping[ik][is] = isotope->gamma_isotope[ik][is];
+                }
+            }
+        }
+
+        MPI_Bcast(&isotope_damping[0][0], dos->kmesh_dos->nk_irred * ns, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+        allocate(isotope_damping_loc, nklocal, ns);
+        for (auto ik = 0; ik < nklocal; ik++) {
+            auto tmpk = nk_l[ik];
+            for (auto is = 0; is < ns; is++) {
+                isotope_damping_loc[ik][is] = isotope_damping[tmpk][is];
+            }
+        }
+
+        deallocate(isotope_damping);
+    }
+
+    double **boundary_damping_loc;
+    if (conductivity->len_boundary > eps) {
+
+        allocate(boundary_damping_loc, nklocal, ns);
+
+        double vel_norm;
+        for (auto ik = 0; ik < nklocal; ++ik) {
+            auto tmpk = nk_l[ik];
+            const int k1 = dos->kmesh_dos->kpoint_irred_all[tmpk][0].knum;
+            vel_norm = 0.0;
+            for (auto is = 0; is < ns; is++) { 
+                for (auto j = 0; j < 3; ++j) {
+                    vel_norm += vel[k1][is][j] * vel[k1][is][j];
+                }
+                
+                vel_norm = std::sqrt(vel_norm);
+                boundary_damping_loc[ik][is] += (vel_norm / conductivity->len_boundary) * time_ry ;
+            }
+        }
+    }
+
+
+    if (conductivity->fph_rta > 0) {
+        calc_damping4();
+    }
 
 
     if (mympi->my_rank == 0) {

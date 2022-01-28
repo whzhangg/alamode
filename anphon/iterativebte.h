@@ -55,8 +55,8 @@ class Iterativebte : protected Pointers {
     double ***dFold;
     double ***dFnew;
     double ***damping4;
-    double **isotope_damping_loc;
-    double **boundary_damping_loc;
+    //double **isotope_damping_loc;
+    //double **boundary_damping_loc;
 
     std::vector<std::vector<KsListGroup>> localnk_triplets_emitt;
     std::vector<std::vector<KsListGroup>> localnk_triplets_absorb;
