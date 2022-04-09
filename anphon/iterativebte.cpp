@@ -52,9 +52,12 @@ void Iterativebte::set_default_variables()
     mixing_factor = 0.9;
     convergence_criteria = 0.02;
     kappa = nullptr;
+    solution_method = 0; 
     // private
     use_triplet_symmetry = true;
     sym_permutation = true;
+    has_4ph_damping = false;
+    has_rta_damping = false;
     vel = nullptr;
     dFold = nullptr;
     dFnew = nullptr;
@@ -97,13 +100,6 @@ void Iterativebte::setup_iterative()
     for (auto i = 0; i < ntemp; ++i) {
         Temperature[i] = system->Tmin + static_cast<double>(i) * system->dT;
     }
-
-    allocate(vel, nk_3ph, ns, 3);
-    phonon_velocity->get_phonon_group_velocity_mesh_mpi(*dos->kmesh_dos,
-                                                        system->lavec_p,
-                                                        fcs_phonon->fc2_ext,
-                                                        vel); //this will gather to rank0 process
-    MPI_Bcast(&vel[0][0][0], nk_3ph * ns * 3, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
     // distribute q point among the processors
     auto nk_ir = dos->kmesh_dos->nk_irred;
@@ -171,10 +167,20 @@ void Iterativebte::get_triplets()
 }
 
 
-void Iterativebte::do_iterativebte()
+void Iterativebte::prepare_data()
 {
     if (mympi->my_rank == 0) {
-        std::cout << std::endl;
+        std::cout << std::endl << " Preparing input data" << std::endl;
+    }
+
+    allocate(vel, nk_3ph, ns, 3);
+    phonon_velocity->get_phonon_group_velocity_mesh_mpi(*dos->kmesh_dos,
+                                                        system->lavec_p,
+                                                        fcs_phonon->fc2_ext,
+                                                        vel); //this will gather to rank0 process
+    MPI_Bcast(&vel[0][0][0], nk_3ph * ns * 3, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    
+    if (mympi->my_rank == 0) {
         std::cout << " Calculate once for the transition probability L(absorb) and L(emitt)" << std::endl;
         std::cout << " Size of L (MB) (approx.) = " << memsize_in_MB(sizeof(double), kplength_absorb + kplength_emitt, ns, ns2)
                   << " ... ";
@@ -182,7 +188,6 @@ void Iterativebte::do_iterativebte()
 
     allocate(L_absorb, kplength_absorb, ns, ns2);
     allocate(L_emitt, kplength_emitt, ns, ns2);
-
     if (integration->ismear >= 0) {
         setup_L_smear();
     } else if (integration->ismear == -1) {
@@ -192,9 +197,60 @@ void Iterativebte::do_iterativebte()
     if (mympi->my_rank == 0) {
         std::cout << "     DONE !" << std::endl;
     }
+
+    if (isotope->include_isotope || conductivity->len_boundary > eps) has_rta_damping = true;
+
+    if (has_rta_damping) {
+        allocate(rta_damping_loc, nklocal, ns);
+
+        for (auto ik = 0; ik < nklocal; ik++) {
+            for (auto is = 0; is < ns; is++) { rta_damping_loc[ik][is] = 0.0; }
+        }
+    }
     
-    iterative_solver();
-    write_kappa_iterative();
+    if (isotope->include_isotope) {
+
+        double **isotope_damping;
+        allocate(isotope_damping, dos->kmesh_dos->nk_irred, ns);
+
+        if (mympi->my_rank == 0) {
+            for (auto ik = 0; ik < dos->kmesh_dos->nk_irred; ik++) {
+                for (auto is = 0; is < ns; is++) {
+                    isotope_damping[ik][is] = isotope->gamma_isotope[ik][is];
+                }
+            }
+        }
+
+        MPI_Bcast(&isotope_damping[0][0], dos->kmesh_dos->nk_irred * ns, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+        for (auto ik = 0; ik < nklocal; ik++) {
+            auto tmpk = nk_l[ik];
+            for (auto is = 0; is < ns; is++) {
+                rta_damping_loc[ik][is] += isotope_damping[tmpk][is];
+            }
+        }
+
+        deallocate(isotope_damping);
+    }
+
+    if (conductivity->len_boundary > eps) {
+        double vel_norm;
+        for (auto ik = 0; ik < nklocal; ++ik) {
+            auto tmpk = nk_l[ik];
+            const int k1 = dos->kmesh_dos->kpoint_irred_all[tmpk][0].knum;
+            vel_norm = 0.0;
+            for (auto is = 0; is < ns; is++) { 
+                for (auto j = 0; j < 3; ++j) {
+                    vel_norm += vel[k1][is][j] * vel[k1][is][j];
+                }
+                
+                vel_norm = std::sqrt(vel_norm);
+                rta_damping_loc[ik][is] += (vel_norm / conductivity->len_boundary) * time_ry ;
+            }
+        }
+    }
+
+
 }
 
 
@@ -489,6 +545,20 @@ void Iterativebte::setup_L_tetra()
 }
 
 
+void Iterativebte::do_iterativebte()
+{
+    prepare_data();
+
+    if (conductivity->fph_rta > 0) {
+        has_4ph_damping = true;
+        calc_damping4();  // value to  damping4 (ntemp, nklocal, ns);
+    }
+
+    LBTE_wrapper();
+    write_kappa_iterative();
+}
+
+
 void Iterativebte::calc_Q_from_L(double **&n, double **&q1)
 {
     unsigned int ik, tmpk;
@@ -631,6 +701,254 @@ void Iterativebte::calc_damping4()
 }
 
 
+void Iterativebte::LBTE_wrapper()
+{
+    // don't keep redundent variables around, like beta, which is trival to calculate
+    for (auto itemp = 0; itemp < ntemp; ++itemp) {
+        if (mympi->my_rank == 0) {
+            std::cout << " Temperature step ..." << std::setw(10) << std::right << std::fixed << std::setprecision(2) << Temperature[itemp] << " K"
+                      << "    -----------------------------" << std::endl;
+        }
+        // set up the b vector:
+        double ***bq;  // right hand side of the equation
+        double ***fq;  // solution
+        double ***A_absorb;
+        double ***A_emitt;
+        allocate(A_absorb, kplength_absorb, ns, ns2);
+        allocate(A_emitt, kplength_emitt, ns, ns2);
+        allocate(bq, nklocal, ns, 3);
+        allocate(fq, nklocal, ns, 3);
+
+        calc_righthandside(itemp, bq);
+        calc_A(itemp, A_absorb, A_emitt);
+
+        double **n1overtau = nullptr;
+        if (has_4ph_damping || has_rta_damping) {
+            // we always pass tau to solver, even if it's not allocated
+            allocate(n1overtau, nklocal, ns); 
+            calc_n1overtau(itemp, n1overtau);
+        }
+
+        if (solution_method == 0) {
+            naive_iteration(A_absorb, A_emitt, bq, n1overtau, fq);
+        } else if (solution_method == 1) {
+            symmetry_iteration(A_absorb, A_emitt, bq, n1overtau, fq);
+        } else if (solution_method == 2) {
+            direct_solver(A_absorb, A_emitt, bq, n1overtau, fq);
+        }
+
+        deallocate(A_absorb);
+        deallocate(A_emitt);
+        deallocate(bq);
+        deallocate(fq);
+
+        if (has_4ph_damping || has_rta_damping) {
+            deallocate(n1overtau);
+        }
+
+    } // itemp
+}
+
+void Iterativebte::calc_n1overtau(const int itemp, double **&n1overtau)
+{
+    double **tau; 
+    allocate(tau, nklocal, ns);
+    for (auto ik = 0; ik < nklocal; ik++) {
+        for (auto is = 0; is < ns; is++) {
+            tau[ik][is] = 0.0;
+        }
+    }
+
+    if (has_4ph_damping) {
+        for (auto ik = 0; ik < nklocal; ik++) {
+            for (auto is = 0; is < ns; is++) {
+                tau[ik][is] += damping4[itemp][ik][is];
+            }
+        }
+    }
+    if (has_rta_damping) {
+        for (auto ik = 0; ik < nklocal; ik++) {
+            for (auto is = 0; is < ns; is++) {
+                tau[ik][is] += rta_damping_loc[ik][is];
+            }
+        }
+    }
+
+    double **n0; 
+    allocate(n0, nk_3ph, ns);
+    calc_n0(itemp, n0);
+    for (auto ik = 0; ik < nklocal; ik++) {
+        auto tmpk = nk_l[ik];
+        auto k1 = dos->kmesh_dos->kpoint_irred_all[tmpk][0].knum;    // k index in full grid
+        for (auto is = 0; is < ns; is++) {
+            n1overtau[ik][is] += n0[k1][is] * (n0[k1][is] + 1.0) * 2 * tau[ik][is];
+        }
+    }
+    deallocate(tau);
+}
+
+void Iterativebte::calc_A(const int itemp, double ***&A_absorb, double ***&A_emitt)
+{
+    double **n0; 
+    allocate(n0, nk_3ph, ns);
+    calc_n0(itemp, n0);
+
+    unsigned k1, k2, k3, s1, s2, s3;
+    double nq1, nq2, nq3;
+
+    unsigned counter = 0;
+    for (auto ik = 0; ik < nklocal; ++ik) {
+
+        auto tmpk = nk_l[ik];
+        k1 = dos->kmesh_dos->kpoint_irred_all[tmpk][0].knum;    // k index in full grid
+
+        // emitt k1 -> k2 + k3 
+        // V(-q1, q2, q3) delta(w1 - w2 - w3)
+        for (auto j = 0; j < localnk_triplets_emitt[ik].size(); ++j) {
+
+            auto pair = localnk_triplets_emitt[ik][j];
+
+            k2 = pair.group[0].ks[0];
+            k3 = pair.group[0].ks[1];
+
+            for (s1 = 0; s1 < ns; ++s1) {
+                nq1 = n0[k1][s1];
+
+                for (auto ib = 0; ib < ns2; ++ib) {
+                    s2 = ib / ns;
+                    s3 = ib % ns;
+
+                    nq2 = n0[k2][s2];
+                    nq3 = n0[k3][s3];
+
+                    A_emitt[counter][s1][ib] = L_emitt[counter][s1][ib] * nq1 * (nq2 + 1.0) * (nq3 + 1.0);
+                }
+            }
+            counter += 1;
+        }
+    }
+    if (counter != kplength_emitt) {
+        exit("setup_L", "Emitt: pair length not equal!");
+    }
+    counter = 0;
+    for (auto ik = 0; ik < nklocal; ++ik) {
+
+        auto tmpk = nk_l[ik];
+        k1 = dos->kmesh_dos->kpoint_irred_all[tmpk][0].knum;    // k index in full grid
+
+        // absorption k1 + k2 -> -k3
+        // V(q1, q2, q3) since k3 = - (k1 + k2)
+        for (auto j = 0; j < localnk_triplets_absorb[ik].size(); ++j) {
+
+            auto pair = localnk_triplets_absorb[ik][j];
+
+            k2 = pair.group[0].ks[0];
+            k3 = pair.group[0].ks[1];
+
+            for (s1 = 0; s1 < ns; ++s1) {
+                nq1 = n0[k1][s1];
+
+                for (auto ib = 0; ib < ns2; ++ib) {
+                    s2 = ib / ns;
+                    s3 = ib % ns;
+
+                    nq2 = n0[k2][s2];
+                    nq3 = n0[k3][s3];
+
+                    A_absorb[counter][s1][ib] = L_absorb[counter][s1][ib] * nq1 * nq2 * (nq3 + 1.0);
+                }
+            }
+            counter += 1;
+        }
+    }
+
+    if (counter != kplength_absorb) {
+        exit("setup_L", "absorb: pair length not equal!");
+    }
+
+    deallocate(n0);
+
+}
+
+void Iterativebte::calc_righthandside(const int itemp, double ***&result) 
+{
+    // equation 2.19, actually right hand side
+    // b = - \beta^{-1} v_q (dn/dT)
+    double beta = 1.0 / (thermodynamics->T_to_Ryd * Temperature[itemp]);
+
+    double **dndt;
+    allocate(dndt, nklocal, ns);
+    calc_dndT(itemp, dndt);
+
+    for (auto ik = 0; ik < nklocal; ++ik) {
+        auto tmpk = nk_l[ik];
+        auto k1 = dos->kmesh_dos->kpoint_irred_all[tmpk][0].knum;
+
+        for (auto is = 0; is < ns; ++is) {
+            double part = (-1.0 / beta) * dndt[ik][is];
+
+            for (auto alpha = 0; alpha < 3; ++alpha) {
+                result[ik][is][alpha] = part * vel[k1][is][alpha];
+            }
+
+        }
+    }
+
+    deallocate(dndt);
+
+}
+
+void Iterativebte::naive_iteration(double ***&A_absorb, double ***&A_emitt, double ***&bq, double **&n1overtau, double ***&solution)
+{
+    // we solve the equation
+    // bq = [ \sum_{q2,q3} (A_{q1,q2}^{q3} + 1/2 A_{q1}^{q2,q3} ) + n1overtau(q1) ] f_{q1} + \sum_{q2,q3} [ (f_{q2} - f_{q3})A_{q1,q2}^{q3} + 1/2 (f_{q2} + f_{q3}) A_{q1}^{q2,q3} ]
+    
+    // generate index for, emitt
+    std::vector<std::vector<int>> ikp_emitt;
+    ikp_emitt.clear();
+    int cnt = 0;
+    for (auto ik = 0; ik < nklocal; ++ik) {
+        std::vector<int> counterk;
+        counterk.clear();
+        for (auto j = 0; j < localnk_triplets_emitt[ik].size(); ++j) {
+            counterk.push_back(cnt);
+            cnt += 1;
+        }
+        ikp_emitt.push_back(counterk);
+    }
+    // absorb
+    std::vector<std::vector<int>> ikp_absorb;
+    ikp_absorb.clear();
+    cnt = 0;
+    for (auto ik = 0; ik < nklocal; ++ik) {
+        std::vector<int> counterk;
+        counterk.clear();
+        for (auto j = 0; j < localnk_triplets_absorb[ik].size(); ++j) {
+            counterk.push_back(cnt);
+            cnt += 1;
+        }
+        ikp_absorb.push_back(counterk);
+    }
+
+    int nsym = symmetry->SymmList.size();
+
+    double ***fq_old;
+    double ***fq_new;
+    allocate(fq_old, nk_3ph, ns, 3);
+    allocate(fq_new, nk_3ph, ns, 3);
+
+    // calculate RTA
+    
+
+    for (auto itr = 0; itr < max_cycle; ++itr) {
+        if (mympi->my_rank == 0) std::cout << "   -> iter " << std::setw(3) << itr << ": ";
+
+    }
+
+    deallocate(fq_old);
+    deallocate(fq_new);
+}
+
 void Iterativebte::iterative_solver()
 {
     allocate(dFold, nk_3ph, ns, 3);
@@ -650,54 +968,6 @@ void Iterativebte::iterative_solver()
     allocate(Q, nklocal, ns);
     allocate(dndt, nklocal, ns);
     allocate(fb, nk_3ph, ns);
-
-    double **isotope_damping_loc;
-    if (isotope->include_isotope) {
-
-        double **isotope_damping;
-        allocate(isotope_damping, dos->kmesh_dos->nk_irred, ns);
-
-        if (mympi->my_rank == 0) {
-            for (auto ik = 0; ik < dos->kmesh_dos->nk_irred; ik++) {
-                for (auto is = 0; is < ns; is++) {
-                    isotope_damping[ik][is] = isotope->gamma_isotope[ik][is];
-                }
-            }
-        }
-
-        MPI_Bcast(&isotope_damping[0][0], dos->kmesh_dos->nk_irred * ns, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-
-        allocate(isotope_damping_loc, nklocal, ns);
-        for (auto ik = 0; ik < nklocal; ik++) {
-            auto tmpk = nk_l[ik];
-            for (auto is = 0; is < ns; is++) {
-                isotope_damping_loc[ik][is] = isotope_damping[tmpk][is];
-            }
-        }
-
-        deallocate(isotope_damping);
-    }
-
-    double **boundary_damping_loc;
-    if (conductivity->len_boundary > eps) {
-
-        allocate(boundary_damping_loc, nklocal, ns);
-
-        double vel_norm;
-        for (auto ik = 0; ik < nklocal; ++ik) {
-            auto tmpk = nk_l[ik];
-            const int k1 = dos->kmesh_dos->kpoint_irred_all[tmpk][0].knum;
-            vel_norm = 0.0;
-            for (auto is = 0; is < ns; is++) { 
-                for (auto j = 0; j < 3; ++j) {
-                    vel_norm += vel[k1][is][j] * vel[k1][is][j];
-                }
-                
-                vel_norm = std::sqrt(vel_norm);
-                boundary_damping_loc[ik][is] += (vel_norm / conductivity->len_boundary) * time_ry ;
-            }
-        }
-    }
 
 
     if (conductivity->fph_rta > 0) {
@@ -906,14 +1176,10 @@ void Iterativebte::iterative_solver()
                     for (s1 = 0; s1 < ns; ++s1) {
 
                         double Q_final = Q[ik][s1];
-                        if (isotope->include_isotope) {
-                            Q_final += fb[k1][s1] * (fb[k1][s1] + 1.0) * 2.0 * isotope_damping_loc[ik][s1];
+                        if (has_rta_damping) {
+                            Q_final += fb[k1][s1] * (fb[k1][s1] + 1.0) * 2.0 * rta_damping_loc[ik][s1];
                         }
-
-                        if (conductivity->len_boundary > eps) {
-                            Q_final += fb[k1][s1] * (fb[k1][s1] + 1.0) * 2.0 * boundary_damping_loc[ik][s1];
-                        }
-
+                        
                         if (conductivity->fph_rta > 0) {
                             Q_final += fb[k1][s1] * (fb[k1][s1] + 1.0) * 2.0 * damping4[itemp][ik][s1];
                         }
@@ -1021,9 +1287,6 @@ void Iterativebte::iterative_solver()
     deallocate(fb);
     deallocate(Wks);
 
-    if (isotope->include_isotope) {
-        deallocate(isotope_damping_loc);
-    }
     if (mympi->my_rank == 0) {
         fs_result.close();
     }
@@ -1041,6 +1304,35 @@ void Iterativebte::calc_boson(int itemp, double **&b_out, double **&dndt_out)
         }
     }
 
+    const double t_to_ryd = thermodynamics->T_to_Ryd;
+
+    for (auto ik = 0; ik < nklocal; ++ik) {
+        auto ikr = nk_l[ik];
+        auto k1 = dos->kmesh_dos->kpoint_irred_all[ikr][0].knum;
+        for (auto is = 0; is < ns; ++is) {
+            omega = dos->dymat_dos->get_eigenvalues()[k1][is];
+            auto x = omega / (t_to_ryd * etemp);
+            dndt_out[ik][is] = std::pow(1.0 / (2.0 * sinh(0.5 * x)), 2) * x / etemp;
+        }
+    }
+}
+
+void Iterativebte::calc_n0(int itemp, double **&b_out)
+{
+    auto etemp = Temperature[itemp];
+    double omega;
+    for (auto ik = 0; ik < nk_3ph; ++ik) {
+        for (auto is = 0; is < ns; ++is) {
+            omega = dos->dymat_dos->get_eigenvalues()[ik][is];
+            b_out[ik][is] = thermodynamics->fB(omega, etemp);
+        }
+    }
+}
+
+void Iterativebte::calc_dndT(int itemp, double **&dndt_out)
+{
+    auto etemp = Temperature[itemp];
+    double omega;
     const double t_to_ryd = thermodynamics->T_to_Ryd;
 
     for (auto ik = 0; ik < nklocal; ++ik) {

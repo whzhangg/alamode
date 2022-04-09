@@ -29,9 +29,15 @@ class Iterativebte : protected Pointers {
     bool direct_solution;
     double *Temperature;
     unsigned int ntemp;
+
     int max_cycle;
     int min_cycle;
     double mixing_factor;
+
+    int solution_method;  
+    // 0: default, iterative solve
+    // 1: iterative solver, symmetry version
+    // 2: direct solver (cg)
 
     double convergence_criteria;  // dF(i+1) - dF(i) < cc
     double ***kappa;
@@ -48,6 +54,8 @@ class Iterativebte : protected Pointers {
     int nk_3ph, nklocal, ns, ns2;
     bool use_triplet_symmetry;
     bool sym_permutation;
+    bool has_rta_damping;
+    bool has_4ph_damping;
 
     double ***L_absorb; // L q0 + q1 -> q2
     double ***L_emitt;  // L q0 -> q1 + q2
@@ -55,6 +63,8 @@ class Iterativebte : protected Pointers {
     double ***dFold;
     double ***dFnew;
     double ***damping4;
+    double **rta_damping_loc;  // temperature independent rta damping i.e. boundary, isotope
+
     //double **isotope_damping_loc;
     //double **boundary_damping_loc;
 
@@ -62,16 +72,29 @@ class Iterativebte : protected Pointers {
     std::vector<std::vector<KsListGroup>> localnk_triplets_absorb;
     std::vector<int> nk_l, nk_job;
 
+    void LBTE_wrapper();        // provide a wrapper around solver for LBTE
     void iterative_solver(); 
-    void direct_solver();       // not implemented
 
     void get_triplets();
+
+    void prepare_data();    // prepare volecity, L, tau_RTA
+    void prepare_tau_RTA();
     void setup_L_smear();
     void setup_L_tetra();
+    void naive_iteration(double ***&, double ***&, double ***&, double **&, double ***&); // solve LBTE with current iteration, without symmetry, should serve as a stable reference method
+    void symmetry_iteration(double ***&, double ***&, double ***&, double **&, double ***&);       // not implemented
+    void direct_solver(double ***&, double ***&, double ***&, double **&, double ***&);       // not implemented
+
+    void calc_righthandside(const int, double ***&);
+    void calc_A(const int, double ***&, double ***&);
+    void calc_n1overtau(const int, double **&);
 
     void calc_damping4();
     void calc_Q_from_L(double **&, double **&);
     void calc_boson(int, double **&, double **&);
+
+    void calc_n0(int, double **&);
+    void calc_dndT(int, double **&);
     void calc_kappa(int, double ***&, double **&); 
 
     void average_vector_degenerate_at_k(int, double **&);
