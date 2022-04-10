@@ -269,7 +269,6 @@ void PHON::execute_RTA() const
 
     } else if (iterativebte->do_iterative) {
         
-        iterativebte->setup_iterative();
         iterativebte->do_iterativebte();
 
     } else {
