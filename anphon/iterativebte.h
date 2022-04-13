@@ -91,6 +91,7 @@ class Iterativebte : protected Pointers {
     void calc_n1overtau(const int, double **&);
 
     void naive_iteration(double ***&, double ***&, double ***&, double **&, double ***&); // solve LBTE with current iteration, without symmetry, should serve as a stable reference method
+    void sum_norm(double ***&)
     void symmetry_iteration(double ***&, double ***&, double ***&, double **&, double ***&);       // not implemented
     void direct_solver(double ***&, double ***&, double ***&, double **&, double ***&);       // not implemented
 
@@ -108,6 +109,7 @@ class Iterativebte : protected Pointers {
     void write_Q_dF(int, double **&, double ***&);
     void write_kappa_iterative();
 
+    void calculate_residual(double ***&);
     // naive iterative solver
 };
 }

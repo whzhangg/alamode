@@ -69,21 +69,40 @@ void Iterativebte::naive_iteration(double ***&A_absorb, double ***&A_emitt, doub
 
     int nsym = symmetry->SymmList.size();
 
-    double ***fq_old;
-    double ***fq_new;
-    allocate(fq_old, nk_3ph, ns, 3);
-    allocate(fq_new, nk_3ph, ns, 3);
+    double ***Fq_old;
+    double ***Fq_new;
+    double ***Residual;
+    allocate(Fq_old, nk_3ph, ns, 3);
+    allocate(Fq_new, nk_3ph, ns, 3);
+    allocate(Residual, nklocal, ns, 3);
 
     // calculate RTA
+    for (auto ik = 0; ik < nk_3ph; ++ik) {
+        for (auto is = 0; is < ns; ++is ) {
+            for (auto x = 0; x < 3; ++x ) {
+                Fq_old[ik][is][x] = 0.0;
+            }
+        }
+    }
+    for (auto ik = 0; ik < nklocal; ++ik) {
+        for (auto is = 0; is < ns; ++is ) {
+            for (auto x = 0; x < 3; ++x ) {
+                Residual[ik][is][x] = 0.0;
+            }
+        }
+    }
+
     
+
 
     for (auto itr = 0; itr < max_cycle; ++itr) {
         if (mympi->my_rank == 0) std::cout << "   -> iter " << std::setw(3) << itr << ": ";
 
     }
 
-    deallocate(fq_old);
-    deallocate(fq_new);
+    deallocate(Fq_old);
+    deallocate(Fq_new);
+    deallocate(Residual);
 }
 
 
