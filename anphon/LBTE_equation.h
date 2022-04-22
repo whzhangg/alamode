@@ -18,10 +18,13 @@ public:
    ~MatrixA();
 
    void set_temperature(const int);
+   void setup_matrix(const std::vector<int> &, const int);
+   double matrix_elements(const int, const int);
+   double M(const int, const int);
+   double P(const int);
    void row_product(const double ***&, double ***&);
 
 private:
-   void setup_matrix(const std::vector<int> &, const int);
    void set_temperature();
    void get_triplets();
 

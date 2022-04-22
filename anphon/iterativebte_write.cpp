@@ -25,45 +25,7 @@
 #include <iterator>
 
 using namespace PHON_NS;
-void Iterativebte::write_kappa_iterative()
-{
-    if (mympi->my_rank == 0) {
 
-        auto file_kappa = input->job_title + ".kl_iter";
-
-        std::ofstream ofs_kl;
-
-        ofs_kl.open(file_kappa.c_str(), std::ios::out);
-        if (!ofs_kl) exit("write_kappa_iterative", "Could not open file_kappa");
-
-        ofs_kl << "# Temperature [K], Thermal Conductivity (xx, xy, xz, yx, yy, yz, zx, zy, zz) [W/mK]" << std::endl;
-        ofs_kl << "# Iterative result." << std::endl;
-
-        if (isotope->include_isotope) ofs_kl << "# Isotope effects are included." << std::endl;
-        if (conductivity->fph_rta > 0) ofs_kl << "# 4ph is included non-iteratively." << std::endl;
-        if (conductivity->len_boundary > eps) {
-                ofs_kl << "# Size of boundary " << std::scientific << std::setprecision(2) 
-                                    << conductivity->len_boundary * 1e9 << " [nm]" << std::endl;
-        }
-
-        for (auto itemp = 0; itemp < ntemp; ++itemp) {
-            ofs_kl << std::setw(10) << std::right << std::fixed << std::setprecision(2)
-                   << Temperature[itemp];
-            for (auto ix = 0; ix < 3; ++ix) {
-                for (auto iy = 0; iy < 3; ++iy) {
-                    ofs_kl << std::setw(15) << std::scientific
-                           << std::setprecision(4) << kappa[itemp][ix][iy];
-                }
-            }
-            ofs_kl << std::endl;
-        }
-        ofs_kl.close();
-        std::cout << std::endl;
-        std::cout << " -----------------------------------------------------------------" << std::endl << std::endl;
-        std::cout << " Lattice thermal conductivity is stored in the file " << file_kappa << std::endl;
-    }
-
-}
 
 void Iterativebte::write_result()
 {

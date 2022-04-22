@@ -52,6 +52,8 @@ class Iterativebte : protected Pointers {
     bool has_rta_damping;
     bool has_4ph_damping;
 
+    double ***L_absorb; // L q0 + q1 -> q2
+    double ***L_emitt;  // L q0 -> q1 + q2
     double ***vel;
     double ***damping4;
     double **rta_damping_loc;  // temperature independent rta damping i.e. boundary, isotope
@@ -59,6 +61,8 @@ class Iterativebte : protected Pointers {
     //double **isotope_damping_loc;
     //double **boundary_damping_loc;
 
+    std::vector<std::vector<KsListGroup>> localnk_triplets_emitt;
+    std::vector<std::vector<KsListGroup>> localnk_triplets_absorb;
     std::vector<int> nk_l;
 
     //helper functions
@@ -67,15 +71,18 @@ class Iterativebte : protected Pointers {
     void calc_kappa(int, double ***&, double **&); 
     void average_vector_degenerate_at_k(int, double **&);
     void average_scalar_degenerate_at_k(int, double *&);
-    void write_kappa_iterative();
     
     void setup_iterative();
     void setup_control_variables();
     void distribute_q();
+    void get_triplets();
 
     void prepare_data();    // prepare volecity, L, tau_RTA
     void prepare_fixed_tau();
     void prepare_group_vel();
+    void prepare_L();
+    void setup_L_smear();
+    void setup_L_tetra();
     void calc_damping4();
 
     void LBTE_wrapper();        // provide a wrapper around solver for LBTE
@@ -83,13 +90,26 @@ class Iterativebte : protected Pointers {
     void calc_A(const int, double ***&, double ***&);
     void calc_n1overtau(const int, double **&);
 
-    void solve_bte(int, double ***&, double **&, double ***&);
-    void naive_iteration(int, double ***&, double **&, double ***&); // solve LBTE with current iteration, without symmetry, should serve as a stable reference method
-    void symmetry_iteration(int, double ***&, double **&, double ***&);       // not implemented
-    
+    void naive_iteration(double ***&, double ***&, double ***&, double **&, double ***&); // solve LBTE with current iteration, without symmetry, should serve as a stable reference method
+    void sum_norm(double ***&)
+    void symmetry_iteration(double ***&, double ***&, double ***&, double **&, double ***&);       // not implemented
+    void direct_solver(double ***&, double ***&, double ***&, double **&, double ***&);       // not implemented
 
-    double local_residual_sum_squared(double ***&);
-    double residual_norm(double ***&);
+
+    void calc_Q_from_L(double **&, double **&);
+    void calc_boson(int, double **&, double **&);
+
+
+    void iterative_solver(); 
+
+    bool check_convergence_kappa(double **&, double **&); // check if convergence cirteria is meet
+    bool check_convergence_dF(const std::vector<double> &);
+
+    void write_result();
+    void write_Q_dF(int, double **&, double ***&);
+    void write_kappa_iterative();
+
+    void calculate_residual(double ***&);
     // naive iterative solver
 };
 }
