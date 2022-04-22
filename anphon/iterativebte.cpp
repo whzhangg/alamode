@@ -258,44 +258,10 @@ void Iterativebte::calc_damping4()
 
 void Iterativebte::LBTE_wrapper()
 {
-    // don't keep redundent variables around, like beta, which is trival to calculate
-    for (auto itemp = 0; itemp < ntemp; ++itemp) {
-        if (mympi->my_rank == 0) {
-            std::cout << " Temperature step ..." << std::setw(10) << std::right << std::fixed << std::setprecision(2) << Temperature[itemp] << " K"
-                      << "    -----------------------------" << std::endl;
-        }
-        // set up the b vector:
-        double ***bq;  // right hand side of the equation
-        double ***fq;  // solution
-        allocate(bq, nklocal, ns, 3);
-        allocate(fq, nklocal, ns, 3);
-
-        calc_righthandside(itemp, bq);
-
-        double **n1overtau = nullptr;
-        if (has_4ph_damping || has_rta_damping) {
-            allocate(n1overtau, nklocal, ns); 
-            calc_n1overtau(itemp, n1overtau);
-        }
-        
-        solve_bte(itemp, bq, n1overtau, fq);
-        calc_kappa(itemp, fq, kappa[itemp]);
-
-        deallocate(bq);
-        deallocate(fq);
-        if (has_4ph_damping || has_rta_damping) {
-            deallocate(n1overtau);
-        }
-
-    } // itemp
-}
-
-void Iterativebte::solve_bte(int itemp, double ***&bq, double **&n1overtau, double ***&fq)
-{
     if (solution_method == 0) {
-        naive_iteration(itemp, bq, n1overtau, fq);
+        naive_iteration();
     } else if (solution_method == 1) {
-        symmetry_iteration(itemp, bq, n1overtau, fq);
+        ;
     }
 }
 
@@ -324,6 +290,55 @@ void Iterativebte::calc_righthandside(const int itemp, double ***&result)
     }
 
     deallocate(dndt);
+}
+
+void Iterativebte::calc_righthandside_full(const int itemp, double ***&result) 
+{
+    // equation 2.19, actually right hand side, for the entire grid
+    // b = - \beta^{-1} v_q (dn/dT)
+    double ***bq;
+    allocate(bq, nk_3ph, ns, 3);
+
+    for (auto ik = 0; ik < nk_3ph; ++ik) {
+        for (auto is = 0; is < ns; ++is) {
+            for (auto ix = 0; ix < 3; ++ix) {
+                result[ik][is][ix] = 0.0;
+                bq[ik][is][ix] = 0.0;
+            }
+        }
+    }
+
+    double beta = 1.0 / (thermodynamics->T_to_Ryd * Temperature[itemp]);
+
+    double **dndt;
+    allocate(dndt, nklocal, ns);
+    calc_dndT(itemp, dndt);
+
+    for (auto ik = 0; ik < nklocal; ++ik) {
+
+        auto tmpk = nk_l[ik];
+        auto num_equivalent = dos->kmesh_dos->kpoint_irred_all[tmpk].size();        
+        auto k1 = dos->kmesh_dos->kpoint_irred_all[tmpk][0].knum;
+
+        for (auto s1 = 0; s1 < ns; ++s1) {
+            double part = (-1.0 / beta) * dndt[ik][s1];
+
+            for (auto ieq = 0; ieq < num_equivalent; ++ieq) {
+                auto k1 = dos->kmesh_dos->kpoint_irred_all[tmpk][ieq].knum; 
+                for (auto alpha = 0; alpha < 3; ++alpha) {
+                    bq[k1][s1][alpha] = part * vel[k1][s1][alpha];
+                }
+            }
+        }
+
+    }
+
+    MPI_Allreduce(
+        &result[0][0][0], &bq[0][0][0], nk_3ph * ns * 3, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD
+    );
+
+    deallocate(dndt);
+    deallocate(bq);
 }
 
 void Iterativebte::calc_n1overtau(const int itemp, double **&n1overtau)
@@ -365,6 +380,163 @@ void Iterativebte::calc_n1overtau(const int itemp, double **&n1overtau)
 
     deallocate(n0);
     deallocate(tau);
+}
+
+void Iterativebte::naive_iteration()
+{
+    MatrixA A;
+    A.setup_matrix(nk_l, nklocal);
+    // don't keep redundent variables around, like beta, which is trival to calculate
+    for (auto itemp = 0; itemp < ntemp; ++itemp) {
+
+        if (mympi->my_rank == 0) {
+            std::cout << " Temperature step ..." 
+                      << std::setw(10) << std::right << std::fixed << std::setprecision(2) 
+                      << Temperature[itemp] << " K"
+                      << "    -----------------------------" << std::endl;
+        }
+
+        // right hand side of the equation, full k grid
+        double ***bq;  
+        allocate(bq, nk_3ph, ns, 3);
+        calc_righthandside_full(itemp, bq);
+
+        // setup n(n+1)/tau, this is local
+        double **n1overtau = nullptr;
+        if (has_4ph_damping || has_rta_damping) {
+            allocate(n1overtau, nklocal, ns); 
+            calc_n1overtau(itemp, n1overtau);
+        }
+
+        double ***fq_new;  // solution, for all k
+        double ***fq_old;
+        double ***residual;
+        allocate(fq_new, nk_3ph, ns, 3);
+        allocate(fq_old, nk_3ph, ns, 3);
+        allocate(residual, nk_3ph, ns, 3);  // we have the entire residual, but we only need values generated locally
+
+        A.set_temperature(itemp);
+        
+        for (auto ik = 0; ik < nk_3ph; ik++){
+            for (auto is = 0; is < ns; is++) {
+                for (auto ix = 0; ix < 3; ix++) {
+                    fq_old[ik][is][ix] = 0.0;
+                }
+            }
+        }
+
+        for (auto ik = 0; ik < nklocal; ++ik) {
+            for (auto is = 0; is < ns; ++is) {
+                auto tmpk = nk_l[ik];
+                auto num_equivalent = dos->kmesh_dos->kpoint_irred_all[tmpk].size();
+                for (auto ieq = 0; ieq < num_equivalent; ++ieq) {
+                    auto k1 = dos->kmesh_dos->kpoint_irred_all[tmpk][ieq].knum; 
+                    for (auto ix = 0; ix < 3; ix++) {
+                        residual[k1][is][ix] = bq[k1][is][ix];
+                    }
+                }
+            }
+        }
+
+        int step = 0;
+        double norm_b = std::pow(local_residual_sum_squared(bq), 0.5);
+        double norm_r = residual_norm(residual);
+        bool converged = (norm_r / norm_b) < convergence_criteria;
+
+        int generating_sym;
+        bool time_reverse = false;
+        int isym;
+        int nsym = symmetry->SymmList.size();
+
+        while (!converged && step < max_cycle)
+        {   
+            int k1, k2, s1, s2;
+
+            for (auto ik = 0; ik < nklocal; ++ik) {
+                for (auto is = 0; is < ns; ++is) {
+                    double Pvalue = A.P(ik * ns + is) + n1overtau[ik][is];
+
+                    auto tmpk = nk_l[ik];
+                    auto num_equivalent = dos->kmesh_dos->kpoint_irred_all[tmpk].size();
+
+                    for (auto ieq = 0; ieq < num_equivalent; ++ieq) {
+                        k1 = dos->kmesh_dos->kpoint_irred_all[tmpk][ieq].knum;      // k1 will go through all points
+                    
+                        for (auto ix = 0; ix < 3; ++ix) {
+                            fq_new[k1][is][ix] = fq_old[k1][is][ix] + residual[k1][is][ix] / Pvalue;
+                        }
+                    }
+                }
+            }
+
+            MPI_Allreduce(
+                &fq_new[0][0][0], &fq_old[0][0][0], nk_3ph * ns * 3, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD
+            );
+
+            for (auto ik = 0; ik < nklocal; ++ik) {
+                for (auto s1 = 0; s1 < ns; ++s1) {
+                    double Pvalue = A.P(ik * ns + s1) + n1overtau[ik][s1];
+
+                    auto tmpk = nk_l[ik];
+                    auto num_equivalent = dos->kmesh_dos->kpoint_irred_all[tmpk].size();
+
+                    for (auto ieq = 0; ieq < num_equivalent; ++ieq) {
+                        k1 = dos->kmesh_dos->kpoint_irred_all[tmpk][ieq].knum;      // k1 will go through all points
+
+                        for (auto ix = 0; ix < 3; ++ix) {
+                            residual[k1][s1][ix] = bq[k1][s1][ix];
+                        }
+
+                        for (auto k2 = 0; k2 < nk_3ph; ++k2) {
+                            for (auto s2 = 0; s2 < ns; ++s2) {
+                                double Mvalue = A.M(k1 * ns + s1, k2 * ns + s2);
+                                for (auto ix = 0; ix < 3; ++ix) {
+                                    residual[k1][s1][ix] -= (Mvalue + Pvalue) * fq_old[k2][s2][ix];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            norm_r = residual_norm(residual);
+            converged = (norm_r / norm_b) < convergence_criteria;
+
+        } // while
+
+        calc_kappa(itemp, fq_old, kappa[itemp]);
+
+        deallocate(fq_new);
+        deallocate(fq_old);
+        deallocate(residual);
+
+        deallocate(bq);
+        if (has_4ph_damping || has_rta_damping) {
+            deallocate(n1overtau);
+        }
+
+    } // itemp
+}
+
+double Iterativebte::residual_norm(double ***&r)
+{
+    double sum = 0.0;
+    auto each_squared = local_residual_sum_squared(r);
+    MPI_Allreduce(&each_squared, &sum, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    return std::pow(sum, 0.5);
+}
+
+double Iterativebte::local_residual_sum_squared(double ***&r)
+{
+    double norm = 0.0;
+    for (auto ik = 0; ik < nk_3ph; ik++) {
+        for (auto is = 0; is < ns; is++) {
+            for (auto ix = 0; ix < 3; ix++) {
+                norm += std::pow( r[ik][is][ix], 2.0);
+            }
+        }
+    } 
+    return norm;
 }
 
 // helper functions
@@ -546,68 +718,4 @@ void Iterativebte::write_kappa_iterative()
         std::cout << " -----------------------------------------------------------------" << std::endl << std::endl;
         std::cout << " Lattice thermal conductivity is stored in the file " << file_kappa << std::endl;
     }
-}
-
-void Iterativebte::naive_iteration(int itemp, double ***&bq, double **&n1overtau, double ***&fq)
-{
-    double ***residual;
-    double ***fq_old;
-    allocate(residual, nklocal, ns, 3);
-    allocate(fq_old, nklocal, ns, 3);
-
-    MatrixA A(this);
-    // Maybe I need to use friend, instead of inherit from pointer.
-    A.setup_matrix(nk_l, nklocal); // this need to move to outside temperature loop
-    A.set_temperature(itemp);
-    for (auto ik = 0; ik < nklocal; ik++) {
-        for (auto is = 0; is < ns; is++) {
-            for (auto ix = 0; ix < 3; ix++) {
-                fq_old[ik][is][ix] = 0.0;
-                residual[ik][is][ix] = 0.0;
-            }
-        }
-    }
-
-    int step = 0;
-    double norm_b = residual_norm(bq);
-    double norm_r = residual_norm(residual);
-    bool converged = (norm_r / norm_b) < convergence_criteria;
-
-    // TODO should fq has length nk_3ph?
-    while (!converged && step < max_cycle){
-        for (auto k1 = 0; k1 < nklocal; k1++) {
-            for (auto s1 = 0; s1 < ns; s1++) {
-                auto one_over_p = n1overtau[k1][s1] + A.P(k1 * ns + s1);
-                for (auto ix = 0; ix < 3; ix ++) {
-                    fq[k1][s1][ix] = fq_old[k1][s1][ix] + one_over_p * residual[k1][s1][ix];
-                }
-            }
-        }
-
-    }
-
-
-    deallocate(residual);
-    deallocate(fq_old);
-}
-
-double Iterativebte::residual_norm(double ***&r)
-{
-    double sum = 0.0;
-    auto each_squared = local_residual_sum_squared(r);
-    MPI_Allreduce(&each_squared, &sum, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-    return std::pow(sum, 0.5);
-}
-
-double Iterativebte::local_residual_sum_squared(double ***&r)
-{
-    double norm = 0.0;
-    for (auto ik = 0; ik < nklocal; ik++) {
-        for (auto is = 0; is < ns; is++) {
-            for (auto ix = 0; ix < 3; ix++) {
-                norm += std::pow( r[ik][is][ix], 2.0);
-            }
-        }
-    } 
-    return norm;
 }

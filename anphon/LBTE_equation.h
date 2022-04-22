@@ -8,13 +8,41 @@ preconditioner and the remaining parts
 #include "pointers.h"
 #include "kpoint.h"
 #include <vector>
+#include <map>
 #include <set>
 #include <complex>
 
 namespace PHON_NS {
-class MatrixA : protected Pointers {
+
+// provide an interface
+class IndexFinder{
+// it will return zero if the pair does not exist
+// return the given index if it does
 public:
-   MatrixA(class PHON *);
+   IndexFinder(int nkin): nkfull(nkin) {
+      mapper_absorb.clear();
+      mapper_emitt.clear();
+   };
+
+   ~IndexFinder();
+
+   int find_index_absorb(int, int, int);
+   int find_index_emitt(int, int, int);
+
+   void add_triplets_absorb(std::vector<KsListGroup> &);
+   void add_triplets_emitt(std::vector<KsListGroup> &);
+
+private:
+   std::map<int, std::map<int, int>> mapper_absorb;
+   std::map<int, std::map<int, int>> mapper_emitt;
+   int nkfull;
+
+};
+
+class MatrixA{
+// matrixA is a friend of iterativebte, it would access global information through 
+public:
+   MatrixA(Iterativebte *&);
    ~MatrixA();
 
    void set_temperature(const int);
@@ -25,6 +53,7 @@ public:
    void row_product(const double ***&, double ***&);
 
 private:
+   Iterativebte *lbte;
    void set_temperature();
    void get_triplets();
 
@@ -49,7 +78,7 @@ private:
    double ***A_emitt;
    double **diag;
 
-   std::vector<int> &nk_l;
+   std::vector<int> nk_l;
    int nk_3ph, nklocal, ns, ns2;
    bool additional_scattering;
 

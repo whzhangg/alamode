@@ -18,6 +18,7 @@
 
 namespace PHON_NS {
 class Iterativebte : protected Pointers {
+ friend class MatrixA;
  public:
     Iterativebte(class PHON *);
     ~Iterativebte();
@@ -74,20 +75,18 @@ class Iterativebte : protected Pointers {
     void distribute_q();
 
     void prepare_data();    // prepare volecity, L, tau_RTA
-    void prepare_fixed_tau();
     void prepare_group_vel();
+    void prepare_fixed_tau();
     void calc_damping4();
 
     void LBTE_wrapper();        // provide a wrapper around solver for LBTE
     void calc_righthandside(const int, double ***&);
-    void calc_A(const int, double ***&, double ***&);
+    void calc_righthandside_full(const int, double ***&);
     void calc_n1overtau(const int, double **&);
 
-    void solve_bte(int, double ***&, double **&, double ***&);
-    void naive_iteration(int, double ***&, double **&, double ***&); // solve LBTE with current iteration, without symmetry, should serve as a stable reference method
-    void symmetry_iteration(int, double ***&, double **&, double ***&);       // not implemented
+    void naive_iteration(); // solve LBTE with current iteration, without symmetry, should serve as a stable reference method
+    void symmetry_iteration();       // not implemented
     
-
     double local_residual_sum_squared(double ***&);
     double residual_norm(double ***&);
     // naive iterative solver

@@ -31,8 +31,9 @@
 
 using namespace PHON_NS;
 
-MatrixA::MatrixA(PHON *phon) : Pointers(phon)
+MatrixA::MatrixA(Iterativebte *&pass)
 {
+    lbte = pass;
     Temperature = nullptr;
     L_absorb = nullptr;
     L_emitt = nullptr;
@@ -59,8 +60,8 @@ void MatrixA::setup_matrix(const std::vector<int> &nkl_in, const int nklocal_in)
         nk_l.push_back(nkl_in[ik]);
     }
 
-    nk_3ph = dos->kmesh_dos->nk;
-    ns = dynamical->neval;
+    nk_3ph = lbte->dos->kmesh_dos->nk;
+    ns = lbte->dynamical->neval;
     ns2 = ns * ns;
 
     set_temperature();
@@ -71,9 +72,9 @@ void MatrixA::setup_matrix(const std::vector<int> &nkl_in, const int nklocal_in)
 void MatrixA::set_temperature()
 {
     allocate(Temperature, ntemp);
-    ntemp = static_cast<unsigned int>((system->Tmax - system->Tmin) / system->dT) + 1;
+    ntemp = static_cast<unsigned int>((lbte->system->Tmax - lbte->system->Tmin) / lbte->system->dT) + 1;
     for (auto i = 0; i < ntemp; ++i) {
-        Temperature[i] = system->Tmin + static_cast<double>(i) * system->dT;
+        Temperature[i] = lbte->system->Tmin + static_cast<double>(i) * lbte->system->dT;
     }
 }
 
@@ -94,12 +95,12 @@ void MatrixA::get_triplets()
         std::vector<KsListGroup> triplet2;
 
         // k3 = k1 - k2
-        dos->kmesh_dos->get_unique_triplet_k(ik, symmetry->SymmList,
-                                             use_triplet_symmetry,
-                                             sym_permutation, triplet);
+        lbte->dos->kmesh_dos->get_unique_triplet_k(ik, lbte->symmetry->SymmList,
+                                                use_triplet_symmetry,
+                                                sym_permutation, triplet);
 
         // k3 = - (k1 + k2)
-        dos->kmesh_dos->get_unique_triplet_k(ik, symmetry->SymmList,
+        lbte->dos->kmesh_dos->get_unique_triplet_k(ik, lbte->symmetry->SymmList,
                                              use_triplet_symmetry,
                                              sym_permutation, triplet2, 1);
 
@@ -116,7 +117,7 @@ void MatrixA::get_triplets()
 
 void MatrixA::calc_L()
 {
-    if (mympi->my_rank == 0) {
+    if (lbte->mympi->my_rank == 0) {
         std::cout << " Calculate once for the transition probability L(absorb) and L(emitt)" << std::endl;
         std::cout << " Size of L (MB) (approx.) = " << memsize_in_MB(sizeof(double), kplength_absorb + kplength_emitt, ns, ns2)
                   << " ... ";
@@ -124,13 +125,13 @@ void MatrixA::calc_L()
 
     allocate(L_absorb, kplength_absorb, ns, ns2);
     allocate(L_emitt, kplength_emitt, ns, ns2);
-    if (integration->ismear >= 0) {
+    if (lbte->integration->ismear >= 0) {
         calc_L_smear();
-    } else if (integration->ismear == -1) {
+    } else if (lbte->integration->ismear == -1) {
         calc_L_tetra();
     }
 
-    if (mympi->my_rank == 0) {
+    if (lbte->mympi->my_rank == 0) {
         std::cout << "     DONE !" << std::endl;
     }
 }
@@ -150,10 +151,10 @@ void MatrixA::calc_L_smear()
     unsigned int counter;
     double delta = 0;
 
-    auto epsilon = integration->epsilon;
+    auto epsilon = lbte->integration->epsilon;
 
-    const auto omega_tmp = dos->dymat_dos->get_eigenvalues();
-    const auto evec_tmp = dos->dymat_dos->get_eigenvectors();
+    const auto omega_tmp = lbte->dos->dymat_dos->get_eigenvalues();
+    const auto evec_tmp = lbte->dos->dymat_dos->get_eigenvectors();
 
     double epsilon2[2];
 
@@ -164,7 +165,7 @@ void MatrixA::calc_L_smear()
     for (ik = 0; ik < nklocal; ++ik) {
 
         auto tmpk = nk_l[ik];
-        k1 = dos->kmesh_dos->kpoint_irred_all[tmpk][0].knum;    // k index in full grid
+        k1 = lbte->dos->kmesh_dos->kpoint_irred_all[tmpk][0].knum;    // k index in full grid
 
         // emitt k1 -> k2 + k3 
         // V(-q1, q2, q3) delta(w1 - w2 - w3)
@@ -176,7 +177,7 @@ void MatrixA::calc_L_smear()
             k3 = pair.group[0].ks[1];
 
             for (s1 = 0; s1 < ns; ++s1) {
-                arr[0] = dos->kmesh_dos->kindex_minus_xk[k1] * ns + s1;
+                arr[0] = lbte->dos->kmesh_dos->kindex_minus_xk[k1] * ns + s1;
                 omega1 = omega_tmp[k1][s1];
 
                 for (ib = 0; ib < ns2; ++ib) {
@@ -188,17 +189,17 @@ void MatrixA::calc_L_smear()
                     omega2 = omega_tmp[k2][s2];
                     omega3 = omega_tmp[k3][s3];
 
-                    if (integration->ismear == 0) {
+                    if (lbte->integration->ismear == 0) {
                         delta = delta_lorentz(omega1 - omega2 - omega3, epsilon);
-                    } else if (integration->ismear == 1) {
+                    } else if (lbte->integration->ismear == 1) {
                         delta = delta_gauss(omega1 - omega2 - omega3, epsilon);
-                    } else if (integration->ismear == 2) {
-                        integration->adaptive_sigma->get_sigma(k2, s2, k3, s3, epsilon2);
+                    } else if (lbte->integration->ismear == 2) {
+                        lbte->integration->adaptive_sigma->get_sigma(k2, s2, k3, s3, epsilon2);
                         delta = delta_gauss(omega1 - omega2 - omega3, epsilon2[0]);
                     }
 
-                    v3_tmp = std::norm(anharmonic_core->V3(arr,
-                                                           dos->kmesh_dos->xk,
+                    v3_tmp = std::norm(lbte->anharmonic_core->V3(arr,
+                                                           lbte->dos->kmesh_dos->xk,
                                                            omega_tmp,
                                                            evec_tmp));
 
@@ -216,7 +217,7 @@ void MatrixA::calc_L_smear()
     for (ik = 0; ik < nklocal; ++ik) {
 
         auto tmpk = nk_l[ik];
-        k1 = dos->kmesh_dos->kpoint_irred_all[tmpk][0].knum;    // k index in full grid
+        k1 = lbte->dos->kmesh_dos->kpoint_irred_all[tmpk][0].knum;    // k index in full grid
 
         // absorption k1 + k2 -> -k3
         // V(q1, q2, q3) since k3 = - (k1 + k2)
@@ -240,19 +241,19 @@ void MatrixA::calc_L_smear()
                     omega2 = omega_tmp[k2][s2];
                     omega3 = omega_tmp[k3][s3];
 
-                    if (integration->ismear == 0) {
+                    if (lbte->integration->ismear == 0) {
                         delta = delta_lorentz(omega1 + omega2 - omega3, epsilon);
-                    } else if (integration->ismear == 1) {
+                    } else if (lbte->integration->ismear == 1) {
                         delta = delta_gauss(omega1 + omega2 - omega3, epsilon);
-                    } else if (integration->ismear == 2) {
-                        integration->adaptive_sigma->get_sigma(k2, s2, k3, s3, epsilon2);
+                    } else if (lbte->integration->ismear == 2) {
+                        lbte->integration->adaptive_sigma->get_sigma(k2, s2, k3, s3, epsilon2);
                         delta = delta_gauss(omega1 + omega2 - omega3, epsilon2[0]);  
                         // we use epsilon2[0] for both absorption and emission, as in shengBTE
                         // this is different from the adaptive in SERTA case
                     }
 
-                    v3_tmp = std::norm(anharmonic_core->V3(arr,
-                                                           dos->kmesh_dos->xk,
+                    v3_tmp = std::norm(lbte->anharmonic_core->V3(arr,
+                                                           lbte->dos->kmesh_dos->xk,
                                                            omega_tmp,
                                                            evec_tmp));
 
@@ -317,13 +318,13 @@ void MatrixA::calc_L_tetra()
     allocate(energy_tmp, nk_3ph);
     allocate(weight_tetra, nk_3ph);
 
-    const auto omega_tmp = dos->dymat_dos->get_eigenvalues();
-    const auto evec_tmp = dos->dymat_dos->get_eigenvectors();
+    const auto omega_tmp = lbte->dos->dymat_dos->get_eigenvalues();
+    const auto evec_tmp = lbte->dos->dymat_dos->get_eigenvectors();
 
     for (auto ik = 0; ik < nklocal; ++ik) {
 
         auto tmpk = nk_l[ik];
-        k1 = dos->kmesh_dos->kpoint_irred_all[tmpk][0].knum;
+        k1 = lbte->dos->kmesh_dos->kpoint_irred_all[tmpk][0].knum;
 
         for (s1 = 0; s1 < ns; ++s1) {
 
@@ -337,22 +338,22 @@ void MatrixA::calc_L_tetra()
                 for (k2 = 0; k2 < nk_3ph; k2++) {
                     
                     for (auto i = 0; i < 3; ++i) {
-                        xk_tmp[i] = dos->kmesh_dos->xk[k1][i] - dos->kmesh_dos->xk[k2][i];
+                        xk_tmp[i] = lbte->dos->kmesh_dos->xk[k1][i] - lbte->dos->kmesh_dos->xk[k2][i];
                     }
 
-                    k3 = dos->kmesh_dos->get_knum(xk_tmp);
+                    k3 = lbte->dos->kmesh_dos->get_knum(xk_tmp);
 
                     omega2 = omega_tmp[k2][s2];
                     omega3 = omega_tmp[k3][s3];
 
                     energy_tmp[k2] = omega2 + omega3;
                 }
-                integration->calc_weight_tetrahedron(nk_3ph,
+                lbte->integration->calc_weight_tetrahedron(nk_3ph,
                                                      kmap_identity,
                                                      energy_tmp,
                                                      omega1,
-                                                     dos->tetra_nodes_dos->get_ntetra(),
-                                                     dos->tetra_nodes_dos->get_tetras(),
+                                                     lbte->dos->tetra_nodes_dos->get_ntetra(),
+                                                     lbte->dos->tetra_nodes_dos->get_tetras(),
                                                      weight_tetra);
 
                 for (auto j = 0; j < localnk_triplets_emitt[ik].size(); ++j) {
@@ -363,12 +364,12 @@ void MatrixA::calc_L_tetra()
                     k2 = pair.group[0].ks[0];
                     k3 = pair.group[0].ks[1];
 
-                    arr[0] = dos->kmesh_dos->kindex_minus_xk[k1] * ns + s1;
+                    arr[0] = lbte->dos->kmesh_dos->kindex_minus_xk[k1] * ns + s1;
                     arr[1] = k2 * ns + s2;
                     arr[2] = k3 * ns + s3;
                     delta = weight_tetra[k2];
-                    v3_tmp = std::norm(anharmonic_core->V3(arr,
-                                                           dos->kmesh_dos->xk,
+                    v3_tmp = std::norm(lbte->anharmonic_core->V3(arr,
+                                                           lbte->dos->kmesh_dos->xk,
                                                            omega_tmp,
                                                            evec_tmp));
 
@@ -379,21 +380,21 @@ void MatrixA::calc_L_tetra()
                 for (k2 = 0; k2 < nk_3ph; k2++) {
 
                     for (auto i = 0; i < 3; ++i) {
-                        xk_tmp[i] = dos->kmesh_dos->xk[k1][i] + dos->kmesh_dos->xk[k2][i];
+                        xk_tmp[i] = lbte->dos->kmesh_dos->xk[k1][i] + lbte->dos->kmesh_dos->xk[k2][i];
                     }
-                    k3 = dos->kmesh_dos->get_knum(xk_tmp);
+                    k3 = lbte->dos->kmesh_dos->get_knum(xk_tmp);
 
                     omega2 = omega_tmp[k2][s2];
                     omega3 = omega_tmp[k3][s3];
 
                     energy_tmp[k2] = -omega2 + omega3;
                 }
-                integration->calc_weight_tetrahedron(nk_3ph,
+                lbte->integration->calc_weight_tetrahedron(nk_3ph,
                                                      kmap_identity,
                                                      energy_tmp,
                                                      omega1,
-                                                     dos->tetra_nodes_dos->get_ntetra(),
-                                                     dos->tetra_nodes_dos->get_tetras(),
+                                                     lbte->dos->tetra_nodes_dos->get_ntetra(),
+                                                     lbte->dos->tetra_nodes_dos->get_tetras(),
                                                      weight_tetra);
 
                 for (auto j = 0; j < localnk_triplets_absorb[ik].size(); ++j) {
@@ -408,8 +409,8 @@ void MatrixA::calc_L_tetra()
                     arr[1] = k2 * ns + s2;
                     arr[2] = k3 * ns + s3;
                     delta = weight_tetra[k2];
-                    v3_tmp = std::norm(anharmonic_core->V3(arr,
-                                                           dos->kmesh_dos->xk,
+                    v3_tmp = std::norm(lbte->anharmonic_core->V3(arr,
+                                                           lbte->dos->kmesh_dos->xk,
                                                            omega_tmp,
                                                            evec_tmp));
 
@@ -438,7 +439,7 @@ void MatrixA::calc_A(const int itemp, double ***&A_absorb, double ***&A_emitt)
 {
     double **n0; 
     allocate(n0, nk_3ph, ns);
-    iterativebte->calc_n0(itemp, n0);
+    lbte->iterativebte->calc_n0(itemp, n0);
 
     unsigned k1, k2, k3, s1, s2, s3;
     double nq1, nq2, nq3;
@@ -447,7 +448,7 @@ void MatrixA::calc_A(const int itemp, double ***&A_absorb, double ***&A_emitt)
     for (auto ik = 0; ik < nklocal; ++ik) {
 
         auto tmpk = nk_l[ik];
-        k1 = dos->kmesh_dos->kpoint_irred_all[tmpk][0].knum;    // k index in full grid
+        k1 = lbte->dos->kmesh_dos->kpoint_irred_all[tmpk][0].knum;    // k index in full grid
 
         // emitt k1 -> k2 + k3 
         // V(-q1, q2, q3) delta(w1 - w2 - w3)
@@ -481,7 +482,7 @@ void MatrixA::calc_A(const int itemp, double ***&A_absorb, double ***&A_emitt)
     for (auto ik = 0; ik < nklocal; ++ik) {
 
         auto tmpk = nk_l[ik];
-        k1 = dos->kmesh_dos->kpoint_irred_all[tmpk][0].knum;    // k index in full grid
+        k1 = lbte->dos->kmesh_dos->kpoint_irred_all[tmpk][0].knum;    // k index in full grid
 
         // absorption k1 + k2 -> -k3
         // V(q1, q2, q3) since k3 = - (k1 + k2)
@@ -539,7 +540,7 @@ void MatrixA::calc_rta_diag(double **&q1)
     for (ik = 0; ik < nklocal; ++ik) {
 
         tmpk = nk_l[ik];
-        k1 = dos->kmesh_dos->kpoint_irred_all[tmpk][0].knum;
+        k1 = lbte->dos->kmesh_dos->kpoint_irred_all[tmpk][0].knum;
 
         for (auto j = 0; j < localnk_triplets_emitt[ik].size(); ++j) {
 
@@ -569,7 +570,7 @@ void MatrixA::calc_rta_diag(double **&q1)
     for (ik = 0; ik < nklocal; ++ik) {
 
         tmpk = nk_l[ik];
-        k1 = dos->kmesh_dos->kpoint_irred_all[tmpk][0].knum;
+        k1 = lbte->dos->kmesh_dos->kpoint_irred_all[tmpk][0].knum;
 
         for (auto j = 0; j < localnk_triplets_absorb[ik].size(); ++j) {
 

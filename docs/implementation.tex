@@ -1,0 +1,103 @@
+\documentclass{article}
+\usepackage{amssymb, amsmath, amsthm}
+\usepackage[margin=1in]{geometry}
+\usepackage{verbatim}
+\usepackage{graphicx}
+\usepackage{hyperref} % \url \href
+\usepackage[]{algorithm2e}
+
+\newtheorem{definition}{Definition}
+\newtheorem{theorem}{Theorem}
+\newcommand{\pfrac}[2]{\frac{\partial #1}{\partial #2}}
+
+\begin{document}
+
+\title{Solution to Linear Phonon BTE}
+\author{Wenhao Zhang}
+\date{\today}
+\maketitle
+
+\section{Formulation}
+Using $q_1$ to denote phonon states $(q_1,n_1)$ and $\alpha$ as cartesian direction index, 
+we write $\mathbf{b}$ as a vector with elements $b_{q,\alpha}$:
+\begin{equation}
+    b_{q_1,\alpha} = - \frac{1}{\beta} v_{q_1,\alpha} \pfrac{n_{q_1}^0}{T}
+\end{equation}
+We write the linear equation of phonon BTE with solution $f_{q_1}^i$ as:
+\begin{align}
+    b_{q_1,\alpha} = 
+    &\left[ \sum_{q_2,q_3} \left( \Lambda_{q_1,q_2}^{q_3} + \frac{1}{2} \Lambda_{q_1}^{q_2, q_3} \right) + \frac{n_{q_1}^0(n_{q_1}^0+1)}{\tau_{q_1}} \right] 
+    f_{q_1,\alpha} \notag \\
+    &+ \sum_{q_2,q_3} 
+    \left[ (f_{q_2,\alpha} - f_{q_3,\alpha})\Lambda_{q_1,q_2}^{q_3} - \frac{1}{2} (f_{q_2,\alpha} + f_{q_3,\alpha}) \Lambda_{q_1}^{q_2, q_3} \right]
+\end{align}
+where relaxation time $\tau_{q_1}$ is independent of the solution, and may include scattering from 
+isotope defects, boundaries, or four phonon terms.
+
+% TODO: write the matrix in better form
+
+Now, let's rewrite this equation in a form suitable for iterative solution:
+\begin{equation}
+    \sum_{q_2} \left( P_{q_1,q_2} + M_{q_1,q_2} \right)  f_{q_2,\alpha} = b_{q_1,\alpha}
+\end{equation} 
+where $P_{q_1,q_2}$ and $M_{q_1,q_2}$ the elements of the $N_k \times N_k$ square matrix
+$\mathbf{P}$ and $\mathbf{M}$. Especially, we call $\mathbf{P}$ the precondition matrix and it is given by:
+\begin{align}
+    \label{E:P}
+    P_{q_1,q_2} &= D_{q_1,q_2} + \frac{n_{q_1}^0(n_{q_1}^0+1)}{\tau_{q_1}} \\
+    D_{q_1,q_2} &= \delta_{q_1,q_2}\sum_{q_3,q_4} \left( \Lambda_{q_1,q_3}^{q_4} + \frac{1}{2} \Lambda_{q_1}^{q_3, q_4} \right)
+\end{align}
+And the matrix element of $\mathbf{M}$ given by:
+\begin{align}
+    &\sum_{q_2,q_3} 
+    \left[ (f_{q_2,\alpha} - f_{q_3,\alpha})\Lambda_{q_1,q_2}^{q_3} - \frac{1}{2} (f_{q_2,\alpha} + f_{q_3,\alpha}) \Lambda_{q_1}^{q_2, q_3} \right] \notag \\
+    &= \sum_{q_2,q_3} (\Lambda_{q_1,q_2}^{q_3} - \frac{1}{2}\Lambda_{q_1}^{q_2, q_3}) f_{q_2,\alpha}
+    - \sum_{q_2,q_3} (\Lambda_{q_1,q_2}^{q_3} + \frac{1}{2}\Lambda_{q_1}^{q_2, q_3}) f_{q_3,\alpha} \notag \\
+    &= \sum_{q_2,q_3} (\Lambda_{q_1,q_2}^{q_3} - \frac{1}{2}\Lambda_{q_1}^{q_2, q_3}) f_{q_2,\alpha}
+    - \sum_{q_2,q_3} (\Lambda_{q_1,q_3}^{q_2} + \frac{1}{2}\Lambda_{q_1}^{q_3, q_2}) f_{q_2,\alpha} \notag \\
+    &= \sum_{q_2,q_3} (\Lambda_{q_1,q_2}^{q_3} - \Lambda_{q_1,q_3}^{q_2} - \Lambda_{q_1}^{q_3, q_2}) f_{q_2,\alpha} \notag \\
+    &= \sum_{q_2} M_{q_1,q_2} f_{q_2,\alpha} 
+\end{align}
+Giving 
+\begin{equation}
+    \label{E:M}
+    M_{q_1,q_2} = \sum_{q_3} (\Lambda_{q_1,q_2}^{q_3} - \Lambda_{q_1,q_3}^{q_2} - \Lambda_{q_1}^{q_3, q_2})
+\end{equation}
+In the iteration process, we have (in matrix form):
+\begin{gather}
+    ( \mathbf{P} + \mathbf{M} )  \mathbf{f}_{\alpha} = \mathbf{b}_{\alpha} \\
+    \mathbf{P} \mathbf{f}_{\alpha}^{i+1} = \mathbf{b}_{\alpha} - \mathbf{M} \mathbf{f}_{\alpha}^i
+\end{gather} 
+Defining the residual:
+\begin{equation}
+    \mathbf{r}_{\alpha}^i =  \mathbf{b}_{\alpha} - ( \mathbf{P} + \mathbf{M} )  \mathbf{f}_{\alpha}^i
+\end{equation}
+and its euclidean norm $\|\mathbf{r}^i\|$, solution of the linear equation can be found by the following algorithm
+\ref{Alg1}
+
+\begin{algorithm}[t]
+    \caption{Iterative solution}
+    \label{Alg1}
+    \KwData{matrix $\mathbf{P}$, $\mathbf{M}$, vector $\mathbf{b}$, convergence threshold $\epsilon$, maximum step $N$}
+    initialize $\mathbf{f}_{\alpha}^0 = 0$\;
+    initialize residual $\mathbf{r}_{\alpha} = \mathbf{b}_{\alpha}$\;
+    step i = 0\;
+    \While{$\|\mathbf{r}\|/\|\mathbf{b}\| < \epsilon$ and $i < N$}{
+        $\mathbf{f}_{\alpha}^{i+1} = \mathbf{f}_{\alpha}^{i} + \mathbf{P}^{-1} \mathbf{r}_{\alpha} $\;
+        $\mathbf{r}_{\alpha} =  \mathbf{b}_{\alpha} - ( \mathbf{P} + \mathbf{M} )  \mathbf{f}_{\alpha}^i$\;
+        $i = i + 1$\;
+    }
+\end{algorithm}
+
+The related equation in non-matrix form is:
+\begin{align}
+    \|\mathbf{r}\| &= \sqrt{\sum_{q_1,\alpha} r_{q_1,\alpha}^2} \\
+    f_{q_1,\alpha}^{i+1} &= f_{q_1,\alpha}^{i} +  r_{q_1,\alpha} / P_{q_1,q_1} \\
+    r_{q_1,\alpha} &= b_{q_1,\alpha} - \sum_{q_2} \left( P_{q_1,q_2} + M_{q_1,q_2} \right)  f_{q_2,\alpha}^{i+1}
+\end{align}
+where the matrix elements are given by equation \eqref{E:P}, \eqref{E:M}
+
+\section{Symmetry adapted}
+
+
+\end{document}
