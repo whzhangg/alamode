@@ -107,6 +107,8 @@ void MatrixA::get_triplets()
         counter += triplet.size();
         counter2 += triplet2.size();
 
+        index_map.add_triplets_absorb(i, triplet2);
+        index_map.add_triplets_emitt(i, triplet);
         localnk_triplets_emitt.push_back(triplet);
         localnk_triplets_absorb.push_back(triplet2);
 
@@ -604,12 +606,30 @@ void MatrixA::calc_rta_diag(double **&q1)
     deallocate(Qabsorb);
 }
 
-double MatrixA::matrix_elements(const int q1, const int q2)
+double MatrixA::matrix_elements(const int iq, const int q2)
 {
     // return matrix element A_{q1,q2}
-    const int k1 = q1 / 3;
-    const int a1 = q1 % 3;
+    
+    // TODO: this is not OK, we need to map all the k values, not just the 
+    // irreducible ik, so we need to rotate k somewhere.
+    const int ik = iq / 3;
+    const int s1 = iq % 3;
     const int k2 = q2 / 3;
-    const int a2 = q2 % 3;
+    const int s2 = q2 % 3;
 
+    auto index_q1q2_q3 = index_map.find_index_ikk2_k3(ik, k2); // index in A_absorb
+    auto index_q1q3_q2 = index_map.find_index_ikk3_k2(ik, k2); // index in A_absorb
+    auto index_q1_q2q3 = index_map.find_index_ik_k2k3(ik, k2); // index in A_emit
+
+    double M = 0.0;
+    for (auto s3 = 0; s3 < ns; s3++) {
+        auto ib = s2 * ns + s3;
+        M += (
+            A_absorb[index_q1q2_q3][s1][ib] 
+          - A_absorb[index_q1q3_q2][s1][ib] 
+          - A_emitt[index_q1_q2q3][s1][ib]
+        );
+    }
+
+    return M;
 }

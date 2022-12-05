@@ -7,37 +7,13 @@ preconditioner and the remaining parts
 
 #include "pointers.h"
 #include "kpoint.h"
+#include "indexfinder.h"
 #include <vector>
 #include <map>
 #include <set>
 #include <complex>
 
 namespace PHON_NS {
-
-// provide an interface
-class IndexFinder{
-// it will return zero if the pair does not exist
-// return the given index if it does
-public:
-   IndexFinder(int nkin): nkfull(nkin) {
-      mapper_absorb.clear();
-      mapper_emitt.clear();
-   };
-
-   ~IndexFinder();
-
-   int find_index_absorb(int, int, int);
-   int find_index_emitt(int, int, int);
-
-   void add_triplets_absorb(std::vector<KsListGroup> &);
-   void add_triplets_emitt(std::vector<KsListGroup> &);
-
-private:
-   std::map<int, std::map<int, int>> mapper_absorb;
-   std::map<int, std::map<int, int>> mapper_emitt;
-   int nkfull;
-
-};
 
 class MatrixA{
 // matrixA is a friend of iterativebte, it would access global information through 
@@ -63,6 +39,7 @@ private:
    void calc_A(const int, double ***&, double ***&);
    void calc_rta_diag(double **&);
 
+   IndexFinder index_map;
    std::vector<std::vector<KsListGroup>> localnk_triplets_emitt;
    std::vector<std::vector<KsListGroup>> localnk_triplets_absorb;
    int kplength_emitt;
